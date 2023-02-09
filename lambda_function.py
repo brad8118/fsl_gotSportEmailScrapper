@@ -1,4 +1,4 @@
-
+import csv
 import requests
 # from botocore.vendored import requests
 from bs4 import BeautifulSoup
@@ -6,113 +6,118 @@ import json
 
 #lambda function
 def lambda_handler(event, context):
-  queryParams = event["queryStringParameters"]  
-  #   print(queryParams)
+  # queryParams = event["queryStringParameters"]  
+  # #   print(queryParams)
 
-  if 'eventId' in queryParams and 'clubId' in queryParams:
-    url = "https://system.gotsport.com/org_event/events/{}/schedules?club={}".format(queryParams['eventId'],queryParams['clubId'])
-  else:
-    print("'eventId' or 'clubId' are missing in query params. Needs to be like this '?eventId=18280/&clubId=3694'", queryParams)      
-    url = "https://system.gotsport.com/org_event/events/18280/schedules?club=3694"    
-    print("Using default URL", url)
+  # if 'eventId' in queryParams and 'clubId' in queryParams:
+  #   url = "https://system.gotsport.com/org_event/events/{}/schedules?club={}".format(queryParams['eventId'],queryParams['clubId'])
+  # else:
+  #   print("'eventId' or 'clubId' are missing in query params. Needs to be like this '?eventId=18280/&clubId=3694'", queryParams)      
+  #   url = "https://system.gotsport.com/org_event/events/18280/schedules?club=3694"    
+  #   print("Using default URL", url)
+
+  url = "https://system.gotsport.com/org_event/events/18280/clubs" 
+  details = getCoachDetails(url)
+  exportToCVS(details)
+  return details
   
-  response = getHtml(url)
+def getCoachDetails(url):
+  url = "https://system.gotsport.com/org_event/events/18280/clubs" 
+  contacts = []
+  
+  html =  getHtml(url)
+  clubs = parseClubsListingHtml(html)
 
-  if( response["success"] == False ):
-      return {
-        'statusCode': 200,
-        'data': response
-  }
+  for club in clubs:
+    teamsByClubHtml = getHtml(club['link'])
+    clubContacts = parseContactDetailsFromClubHtml(teamsByClubHtml)
+    for c in clubContacts:
+      c['club_name'] = club['club_name']
+    # print('clubContacts', clubContacts)
+    contacts.extend(clubContacts)
 
+  # print('LAST CLUB --', contacts[-1])
+  return contacts
+    
 
-  games = parseHtml(response["data"])
-  return games
-  # return {
-  #       'statusCode': 200,
-  #       'data':games
-  # }
+# return a list of club names and links to their teams page
+# https://system.gotsport.com/org_event/events/18280/clubs
+def parseClubsListingHtml(html):
+  clubs = []
+  tableOfClubs = html.find_all("table", {"class": "table table-bordered table-condensed table-hover"})[0]
 
+#loop club links
+  table_body = tableOfClubs.find('tbody')
+  rows = table_body.find_all('tr')
+  for row in rows:        
+    # cols = row.find_all('td')
+    aTag = row.find('a')
+    clubLink = 'https://system.gotsport.com' + aTag.get('href')
+    clubs.append({'club_name':aTag.text, 'link': clubLink})
+  
+  return clubs
 
+## parse html, to get team details then jump 2 deep to get coaches' details
+# https://system.gotsport.com/org_event/events/18280/clubs/18604
+def parseContactDetailsFromClubHtml(html):
+  contacts = []
+  tableOfTeams = html.find_all("table")[0]
+  rows = tableOfTeams.find_all('tr')
+  rows.pop(0) # remove headers
+  for teamRow in rows:  
+    teamCols = teamRow.find_all('td')
+    # https://system.gotsport.com/org_event/events/18280/schedules?team=932206
+    teamUrl = 'https://system.gotsport.com' + teamCols[0].find('a').get('href')
+    teamCols = [ele.text.strip() for ele in teamCols]
+    # swap schedule to contacts 
+    # https://system.gotsport.com/org_event/events/18280/contacts?team=932206
+    teamContactsUrl = teamUrl.replace('schedules', 'contacts')
+    # print('teamContactUrl', teamContactUrl)
+    contactHtml =  getHtml(teamContactsUrl)
+
+    # ////
+    tableOfPeople = contactHtml.find("table")
+    rowsOfPeople = tableOfPeople.find_all('tr')    
+    # rowsOfPeople.pop(0)
+    for personRow in rowsOfPeople:
+      # print('personRow', personRow)
+      personCols = personRow.find_all('td')
+      personCols = [ele.text.strip() for ele in personCols]
+      
+      # print('personCols', personCols)
+      details = {'team':teamCols[0], 'url': teamUrl, 'gender':teamCols[1], 
+                 'age':teamCols[2],'division': teamCols[3], 'bracket':teamCols[4], 
+                'person_name':personCols[1], 'email':personCols[2], 'cell':personCols[3]}
+      # print('details', details)
+      contacts.append(details)
+
+    # print("-------- All Contacts by club--------\n", contacts)
+  return contacts
+  
 def getHtml(url):
   try:
     print("Calling url:", url)
     webpage = requests.get(url)
-    print(webpage)
+    # print(webpage)
     
     if webpage.status_code == 200:
       webpage_bs = BeautifulSoup(webpage.text, 'html.parser')
       # webpage_bs = BeautifulSoup(webpage.content, 'html.parser')
       # print("Success")
       # print(webpage_bs.prettify())
-      print("Success getting HTML")
-      return {"success": True, "data": webpage_bs }
+      # print("Success getting HTML")
+      return webpage_bs
     else:
       # print(webpage.status_code+" "+url)
-      return {"success": False, "data": webpage.status_code+" "+url }
+      raise Exception("API Failure - " + webpage.status_code+ " "+url)
   except Exception as e:
-    # print("requests does not work : "+url)
-    return {"success": False, "data": e }
+    print("request does not work : ", url)
+    print("Exception : ", e)
+    raise Exception("API Exception - " + url + " " + e)
 
-    
-
-# <div class='hidden-xs'>
-# <h4 class='text-muted'>Sunday, September 18, 2022</h4>
-# <div class='table-responsive'>
-# <table class='table table-bordered table-condensed table-hover'>
-# <thead>
-def parseHtml(html):
-  games = []
-  # <h4 class='text-center'>Wednesday, November 09, 2022</h4>
-  datesTags = html.find_all("h4", {"class": "text-center"})
-  dates = [d.text for d in datesTags]
-  # print("PARSING RESPONSE: Dates found:", len(dates), dates)
-
-  # <table class='table table-bordered table-condensed table-hover'>
-  gamesGroupedByDate = html.find_all("table", {"class": "table table-bordered table-condensed table-hover"})
-  
-  print("PARSING RESPONSE: gamesGroupedByDate items", len(gamesGroupedByDate))
-  #loop over dates, the index of date matches the index of gamesGroupedByDate
-  for index, gamesInADate in enumerate(gamesGroupedByDate):
-    table_body = gamesInADate.find('tbody')
-    rows = table_body.find_all('tr')
-    # print("PARSING RESPONSE: index",index, dates[index], len(rows))
-    for row in rows:        
-      cols = row.find_all('td')
-      cols = [ele.text.strip() for ele in cols]
-      # print("Adding matchNum", cols[0])
-      game = {'date':dates[index], 
-              'matchNum': cols[0],
-              'time': cols[1].replace("\n\nScheduled",""),
-              # 'home': cols[2].replace("Freehold SL Freehold SL ", " "),
-              'result': cols[3],
-              # 'away': cols[4].replace("Freehold SL Freehold SL ", " "),
-              'location': cols[5],
-              'division': cols[6],
-              'homeGame': 'HOME' if "Freehold SL" in cols[2] else 'AWAY',
-              'year': cols[6].split(" ")[0],
-              'sex': cols[6].split(" ")[1]
-             }
-      team1 = cols[2].replace("Freehold SL Freehold SL ", "")
-      team2 = cols[4].replace("Freehold SL Freehold SL ", "")
-      
-      game['freeholdTeam'] = team1 if game['homeGame'] == 'HOME' else team2
-      game['opponent'] = team1 if game['homeGame'] != 'HOME' else team2
-      
-      try:
-        homeField, homeFieldNum = game['location'].rsplit("-", 1)
-        game['field'] = homeField.strip()
-        game['fieldNum'] = homeFieldNum.strip()
-      except:
-        game['field'] = ''
-        game['fieldNum'] = ''
-        
-      games.append(game)
-    
-    # print("games", len(games))
-    #   for g in games:
-    #     print(g)
-  return games
-
-# url = "https://system.gotsport.com/org_event/events/18280/schedules?club=3694"
-# html = getHtml(url)
-# games = parseHtml(html)
+def exportToCVS(details):
+  with open("contactList.csv","w",newline="") as f:  
+      title = "club_name,team,url,gender,age,division,bracket,person_name,email,cell".split(",") # quick hack
+      cw = csv.DictWriter(f,title,delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+      cw.writeheader()
+      cw.writerows(details)
